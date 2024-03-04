@@ -1,8 +1,10 @@
 use phf::phf_ordered_map;
 use regex::Regex;
 use std::{
+    error::Error,
     fmt,
     io::{stdin, stdout, Write},
+    str::FromStr,
 };
 
 include!(concat!(env!("OUT_DIR"), "/codegen.rs"));
@@ -62,20 +64,8 @@ pub fn validate(code: &str) -> bool {
             .collect()
     };
 
-    let regex = Regex::new(r"([A-Z]{3})([A-Z]{3})(\d{2})([A-Z])(\d{2})([A-Z]\d{3})([A-Z])")
-        .expect("valid regex");
-    let Some(captures) = regex.captures(&code) else {
+    let Ok(code) = FiscalCode::from_str(&code) else {
         return false;
-    };
-
-    let code = FiscalCode {
-        surname: captures.get(1).unwrap().as_str().into(),
-        name: captures.get(2).unwrap().as_str().into(),
-        birth_year: captures.get(3).unwrap().as_str().parse().unwrap(),
-        birth_month: captures.get(4).unwrap().as_str().chars().next().unwrap(),
-        birth_day_gender: captures.get(5).unwrap().as_str().parse().unwrap(),
-        birth_town: captures.get(6).unwrap().as_str().into(),
-        check_character: captures.get(7).unwrap().as_str().chars().next().unwrap(),
     };
     if !BIRTH_MONTHS.values().any(|&v| v == code.birth_month) {
         return false;
@@ -146,6 +136,29 @@ struct FiscalCode {
     birth_day_gender: u8,
     birth_town: String,
     check_character: char,
+}
+
+impl FromStr for FiscalCode {
+    type Err = Box<dyn Error>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let regex = Regex::new(r"([A-Z]{3})([A-Z]{3})(\d{2})([A-Z])(\d{2})([A-Z]\d{3})([A-Z])")
+            .expect("valid regex");
+
+        if let Some(captures) = regex.captures(s) {
+            Ok(FiscalCode {
+                surname: captures.get(1).unwrap().as_str().into(),
+                name: captures.get(2).unwrap().as_str().into(),
+                birth_year: captures.get(3).unwrap().as_str().parse().unwrap(),
+                birth_month: captures.get(4).unwrap().as_str().chars().next().unwrap(),
+                birth_day_gender: captures.get(5).unwrap().as_str().parse().unwrap(),
+                birth_town: captures.get(6).unwrap().as_str().into(),
+                check_character: captures.get(7).unwrap().as_str().chars().next().unwrap(),
+            })
+        } else {
+            Err("Invalid fiscal code format".into())
+        }
+    }
 }
 
 impl fmt::Display for FiscalCode {
