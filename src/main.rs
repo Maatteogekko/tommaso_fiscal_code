@@ -1,3 +1,4 @@
+use chrono::{Datelike, NaiveDate, Utc};
 use phf::phf_ordered_map;
 use regex::Regex;
 use std::{
@@ -21,13 +22,18 @@ fn main() {
         });
 
         let result = validate(&input);
-        println!(
-            "{}",
-            match result {
-                true => "Code is valid",
-                false => "Code is invalid",
+        match result {
+            true => {
+                println!("Code is valid");
+
+                let info = info(&input).unwrap();
+                println!("Info:");
+                println!("\tBorn on: {}", info.born_on);
+                println!("\tGender: {}", info.gender);
+                println!("\t{}", info.place_of_birth);
             }
-        );
+            false => println!("Code is invalid"),
+        }
         stdout().flush().unwrap();
     }
 }
@@ -82,6 +88,16 @@ pub fn validate(code: &str) -> bool {
     true
 }
 
+pub fn info(code: &str) -> Result<FiscalCodeInfo, Box<dyn Error>> {
+    let code = FiscalCode::from_str(code)?;
+
+    Ok(FiscalCodeInfo {
+        born_on: code.born_on(),
+        gender: code.gender(),
+        place_of_birth: code.place_of_birth(),
+    })
+}
+
 fn calculate_check_character(code: &str) -> Option<char> {
     let mut sum = 0;
     for (i, character) in code[..code.len() - 1].char_indices() {
@@ -127,7 +143,7 @@ fn calculate_check_character_provisional(code: &str) -> char {
     ((10 - units) % 10 + 48) as char
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct FiscalCode {
     surname: String,
     name: String,
@@ -138,14 +154,91 @@ struct FiscalCode {
     check_character: char,
 }
 
+pub struct FiscalCodeInfo {
+    born_on: NaiveDate,
+    gender: String,
+    place_of_birth: PlaceOfBirth,
+}
+
+pub struct PlaceOfBirth {
+    country_code: String,
+    country_name: String,
+    city: Option<String>,
+    state: Option<String>,
+}
+
+impl fmt::Display for PlaceOfBirth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Country: {} ({})\n\tCity: {} ({})",
+            self.country_name,
+            self.country_code,
+            self.city.clone().unwrap_or("N/A".into()),
+            self.state.clone().unwrap_or("N/A".into())
+        )
+    }
+}
+
+impl FiscalCode {
+    fn born_on(&self) -> NaiveDate {
+        let day = if self.birth_day_gender > 40 {
+            self.birth_day_gender - 40
+        } else {
+            self.birth_day_gender
+        };
+
+        let month = *BIRTH_MONTHS
+            .entries()
+            .find(|(_, &c)| c == self.birth_month)
+            .unwrap()
+            .0
+            + 1;
+
+        let year = {
+            let current = Utc::now().year() as f32;
+
+            let year = ((current / 100.0).round() * 100.0) as i32 + self.birth_year as i32;
+
+            if year < current as i32 {
+                year
+            } else {
+                year - 100
+            }
+        };
+
+        NaiveDate::from_ymd_opt(year, month.into(), day.into()).expect("valid date")
+    }
+
+    fn gender(&self) -> String {
+        if self.birth_day_gender > 40 {
+            "female".into()
+        } else {
+            "male".into()
+        }
+    }
+
+    fn place_of_birth(&self) -> PlaceOfBirth {
+        let location = *BIRTH_TOWNS.get(&self.birth_town).unwrap();
+
+        PlaceOfBirth {
+            country_code: location.country_code.into(),
+            country_name: location.country_name.into(),
+            city: location.city.map(|v| v.into()),
+            state: location.state.map(|v| v.into()),
+        }
+    }
+}
+
 impl FromStr for FiscalCode {
     type Err = Box<dyn Error>;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim().to_uppercase();
         let regex = Regex::new(r"([A-Z]{3})([A-Z]{3})(\d{2})([A-Z])(\d{2})([A-Z]\d{3})([A-Z])")
             .expect("valid regex");
 
-        if let Some(captures) = regex.captures(s) {
+        if let Some(captures) = regex.captures(&s) {
             Ok(FiscalCode {
                 surname: captures.get(1).unwrap().as_str().into(),
                 name: captures.get(2).unwrap().as_str().into(),
@@ -178,19 +271,19 @@ impl fmt::Display for FiscalCode {
     }
 }
 
-static BIRTH_MONTHS: phf::OrderedMap<&'static str, char> = phf_ordered_map! {
-    "January" => 'A',
-    "February" => 'B',
-    "March" => 'C',
-    "April" => 'D',
-    "May" => 'E',
-    "June" => 'H',
-    "July" => 'L',
-    "August" => 'M',
-    "September" => 'P',
-    "October" => 'R',
-    "November" => 'S',
-    "December" => 'T',
+static BIRTH_MONTHS: phf::OrderedMap<u8, char> = phf_ordered_map! {
+    0u8 => 'A',
+    1u8 => 'B',
+    2u8 => 'C',
+    3u8 => 'D',
+    4u8 => 'E',
+    5u8 => 'H',
+    6u8 => 'L',
+    7u8 => 'M',
+    8u8 => 'P',
+    9u8 => 'R',
+    10u8 => 'S',
+    11u8 => 'T',
 };
 
 static DIGIT_REPLACEMENTS: phf::OrderedMap<u8, char> = phf_ordered_map! {
@@ -319,14 +412,18 @@ mod tests {
 
     #[test]
     fn test_validate() {
+        //spell-checker: disable
         assert!(validate("GNTMTT99C27H501F"));
         assert!(!validate("INVALIDCODE"));
+        //spell-checker: enable
     }
 
     #[test]
     fn test_validate_omocodia() {
+        //spell-checker: disable
         assert!(validate("GNTMTT99C27H50MX"));
         assert!(validate("GNTMTT99C27HR0MS"));
+        //spell-checker: enable
     }
 
     #[test]
@@ -341,7 +438,49 @@ mod tests {
 
     #[test]
     fn test_validate_invalid_length() {
+        // spell-checker: disable
         assert!(!validate("TOOSHORT"));
         assert!(!validate("THISCODEISTOOLONGTOBEAVALIDFISCALCODE"));
+        //spell-checker: enable
+    }
+
+    #[test]
+    fn test_info() {
+        //spell-checker: disable
+        let info = super::info("GNTMTT99C27H501F");
+        //spell-checker: enable
+        assert!(info.is_ok());
+        assert_eq!(
+            info.as_ref().unwrap().born_on,
+            NaiveDate::from_ymd_opt(1999, 3, 27).unwrap()
+        );
+        assert_eq!(info.as_ref().unwrap().gender, "male");
+        assert_eq!(info.as_ref().unwrap().place_of_birth.country_name, "Italia");
+        assert_eq!(info.as_ref().unwrap().place_of_birth.country_code, "IT");
+        assert_eq!(
+            info.as_ref().unwrap().place_of_birth.city,
+            Some("Roma".into()),
+        );
+        assert_eq!(
+            info.as_ref().unwrap().place_of_birth.state,
+            Some("RM".into()),
+        );
+
+        //spell-checker: disable
+        let info = super::info("MKSKRS92L65Z219S");
+        //spell-checker: enable
+        assert!(info.is_ok());
+        assert_eq!(
+            info.as_ref().unwrap().born_on,
+            NaiveDate::from_ymd_opt(1992, 7, 25).unwrap()
+        );
+        assert_eq!(info.as_ref().unwrap().gender, "female");
+        assert_eq!(
+            info.as_ref().unwrap().place_of_birth.country_name,
+            "Giappone"
+        );
+        assert_eq!(info.as_ref().unwrap().place_of_birth.country_code, "JP");
+        assert!(info.as_ref().unwrap().place_of_birth.city.is_none());
+        assert!(info.as_ref().unwrap().place_of_birth.state.is_none());
     }
 }
