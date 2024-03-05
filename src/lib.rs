@@ -167,6 +167,30 @@ impl fmt::Display for FiscalCode {
     }
 }
 
+impl FromStr for FiscalCode {
+    type Err = Box<dyn Error>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim().to_uppercase();
+        let regex = Regex::new(r"([A-Z]{3})([A-Z]{3})(\d{2})([A-Z])(\d{2})([A-Z]\d{3})([A-Z])")
+            .expect("valid regex");
+
+        if let Some(captures) = regex.captures(&s) {
+            Ok(FiscalCode {
+                surname: captures.get(1).unwrap().as_str().into(),
+                name: captures.get(2).unwrap().as_str().into(),
+                birth_year: captures.get(3).unwrap().as_str().parse().unwrap(),
+                birth_month: captures.get(4).unwrap().as_str().chars().next().unwrap(),
+                birth_day_gender: captures.get(5).unwrap().as_str().parse().unwrap(),
+                birth_town: captures.get(6).unwrap().as_str().into(),
+                check_character: captures.get(7).unwrap().as_str().chars().next().unwrap(),
+            })
+        } else {
+            Err("Invalid fiscal code format".into())
+        }
+    }
+}
+
 impl FiscalCode {
     fn born_on(&self) -> NaiveDate {
         let day = if self.birth_day_gender > 40 {
@@ -213,30 +237,6 @@ impl FiscalCode {
             country_name: location.country_name.into(),
             city: location.city.map(|v| v.into()),
             state: location.state.map(|v| v.into()),
-        }
-    }
-}
-
-impl FromStr for FiscalCode {
-    type Err = Box<dyn Error>;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.trim().to_uppercase();
-        let regex = Regex::new(r"([A-Z]{3})([A-Z]{3})(\d{2})([A-Z])(\d{2})([A-Z]\d{3})([A-Z])")
-            .expect("valid regex");
-
-        if let Some(captures) = regex.captures(&s) {
-            Ok(FiscalCode {
-                surname: captures.get(1).unwrap().as_str().into(),
-                name: captures.get(2).unwrap().as_str().into(),
-                birth_year: captures.get(3).unwrap().as_str().parse().unwrap(),
-                birth_month: captures.get(4).unwrap().as_str().chars().next().unwrap(),
-                birth_day_gender: captures.get(5).unwrap().as_str().parse().unwrap(),
-                birth_town: captures.get(6).unwrap().as_str().into(),
-                check_character: captures.get(7).unwrap().as_str().chars().next().unwrap(),
-            })
-        } else {
-            Err("Invalid fiscal code format".into())
         }
     }
 }
@@ -384,7 +384,16 @@ mod tests {
     fn test_validate() {
         //spell-checker: disable
         assert!(validate("GNTMTT99C27H501F"));
+        assert!(validate("MRARSS80A01H501T"));
+        assert!(validate("BNCLRD69T61A783M"));
+        assert!(validate("FCKTSS05C01Z122F"));
+        assert!(validate("FCKTSS05C01ZMLQH"));
+
         assert!(!validate("INVALIDCODE"));
+        assert!(!validate("FCKTSS05C01Z122K"));
+        assert!(!validate("FCKTSS05F01Z122F"));
+        assert!(!validate("FCKTSS05C32Z122F"));
+        assert!(!validate("FCKTSS05C01Z105L"));
         //spell-checker: enable
     }
 
