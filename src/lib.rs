@@ -1,79 +1,65 @@
 use chrono::{Datelike, NaiveDate, Utc};
 use phf::phf_ordered_map;
 use regex::Regex;
-use std::{error::Error, fmt, str::FromStr};
+use std::{error::Error, fmt};
 
 include!(concat!(env!("OUT_DIR"), "/codegen.rs"));
 
 /// Check if the string provided is a valid Italian Fiscal Code.
+/// Temporary codes are supported.
 pub fn validate(code: &str) -> bool {
     let code = code.trim().to_uppercase();
-    let regex = Regex::new(r"^\d*$").expect("valid regex");
-    if code.len() == 11 && regex.is_match(&code) {
+    let regex = Regex::new(r"^\d{11}$").expect("valid regex");
+    if regex.is_match(&code) {
         // temporary fiscal code
         let (code, check_character) = code.split_at(10);
         return check_character == calculate_check_character_provisional(code).to_string();
     }
-    if code.len() != 16 {
-        return false;
-    }
 
-    let check_character = calculate_check_character(&code.to_string());
-
-    // get the original code that may be modified in case of omocodia
-    let code: String = {
-        let indices = [6usize, 7, 9, 10, 12, 13, 14];
-        code.char_indices()
-            .map(|(i, character)| {
-                if indices.contains(&i) {
-                    DIGIT_REPLACEMENTS
-                        .into_iter()
-                        .find(|(_, &value)| value == character)
-                        // convert to the correct ASCII char
-                        .map_or(character, |(&key, _)| (key + 48) as char)
-                } else {
-                    character
-                }
-            })
-            .collect()
-    };
-
-    let Ok(code) = FiscalCode::from_str(&code) else {
-        return false;
-    };
-    if !BIRTH_MONTHS.values().any(|&v| v == code.birth_month) {
-        return false;
-    }
-    if !BIRTH_TOWNS.keys().any(|&v| v == code.birth_town) {
-        return false;
-    }
-    match check_character {
-        Some(v) if v != code.check_character => return false,
-        Some(_) => (),
-        None => return false,
-    }
-
-    true
+    FiscalCode::try_from(code.as_str()).is_ok()
 }
 
 /// This function expects a valid Italian Fiscal Code as input.
+///
 /// You can use [validate] to check if the code is correct before calling this.
+/// Note that temporary codes are **not** supported.
 pub fn info(code: &str) -> Result<FiscalCodeInfo, Box<dyn Error>> {
-    let code = FiscalCode::from_str(code)?;
+    let code = FiscalCode::try_from(code)?;
 
     Ok(FiscalCodeInfo {
-        born_on: code.born_on(),
-        gender: code.gender(),
-        place_of_birth: code.place_of_birth(),
+        born_on: code.born_on,
+        gender: code.gender,
+        place_of_birth: code.place_of_birth,
     })
 }
 
+#[derive(Debug, Clone)]
 pub struct FiscalCodeInfo {
     pub born_on: NaiveDate,
-    pub gender: String,
+    pub gender: Gender,
     pub place_of_birth: PlaceOfBirth,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum Gender {
+    Female,
+    Male,
+}
+
+impl fmt::Display for Gender {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}",
+            match &self {
+                Gender::Female => "F",
+                Gender::Male => "M",
+            }
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct PlaceOfBirth {
     pub country_code: String,
     pub country_name: String,
@@ -94,23 +80,24 @@ impl fmt::Display for PlaceOfBirth {
     }
 }
 
-fn calculate_check_character(code: &str) -> Option<char> {
+fn calculate_check_character(code: &str) -> char {
     let mut sum = 0;
     for (i, character) in code[..code.len() - 1].char_indices() {
         if (i + 1) % 2 == 0 {
-            match CHECK_CHARACTER_EVEN_REPLACEMENTS.get(&character) {
-                Some(v) => sum += v,
-                None => return None,
-            }
+            sum += CHECK_CHARACTER_EVEN_REPLACEMENTS
+                .get(&character)
+                .expect("character replacement found");
         } else {
-            match CHECK_CHARACTER_ODD_REPLACEMENTS.get(&character) {
-                Some(v) => sum += v,
-                None => return None,
-            }
+            sum += CHECK_CHARACTER_ODD_REPLACEMENTS
+                .get(&character)
+                .expect("character replacement found");
         }
     }
 
-    CHECK_CHARACTER_REMINDER.get(&(sum % 26)).copied()
+    CHECK_CHARACTER_REMINDER
+        .get(&(sum % 26))
+        .copied()
+        .expect("value replacement found")
 }
 
 fn calculate_check_character_provisional(code: &str) -> char {
@@ -139,51 +126,74 @@ fn calculate_check_character_provisional(code: &str) -> char {
     ((10 - units) % 10 + 48) as char
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 struct FiscalCode {
+    /// The string representing this code
+    representation: String,
+    /// The string representing this code without any omocodia alterations
+    representation_canonical: String,
     surname: String,
     name: String,
-    birth_year: u8,
-    birth_month: char,
-    birth_day_gender: u8,
-    birth_town: String,
-    check_character: char,
+    born_on: NaiveDate,
+    gender: Gender,
+    place_of_birth: PlaceOfBirth,
 }
 
-impl fmt::Display for FiscalCode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}{}{}{}{}{}{}{}",
-            self.surname,
-            self.name,
-            self.birth_year,
-            self.birth_month,
-            self.birth_day_gender,
-            self.birth_town.chars().next().unwrap(),
-            self.birth_town.chars().skip(1).collect::<String>(),
-            self.check_character
-        )
-    }
-}
+impl TryFrom<&str> for FiscalCode {
+    type Error = Box<dyn Error>;
 
-impl FromStr for FiscalCode {
-    type Err = Box<dyn Error>;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.trim().to_uppercase();
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        let code = s.trim().to_uppercase();
+        if code.len() != 16 {
+            return Err("Invalid length".into());
+        }
         let regex = Regex::new(r"([A-Z]{3})([A-Z]{3})(\d{2})([A-Z])(\d{2})([A-Z]\d{3})([A-Z])")
             .expect("valid regex");
 
-        if let Some(captures) = regex.captures(&s) {
+        let check_character_calculated = calculate_check_character(&code.to_string());
+
+        // get the original code that may be modified in case of omocodia
+        let code_canonical: String = {
+            let indices = [6usize, 7, 9, 10, 12, 13, 14];
+            code.char_indices()
+                .map(|(i, character)| {
+                    if indices.contains(&i) {
+                        DIGIT_REPLACEMENTS
+                            .into_iter()
+                            .find(|(_, &value)| value == character)
+                            // convert to the correct ASCII char
+                            .map_or(character, |(&key, _)| (key + 48) as char)
+                    } else {
+                        character
+                    }
+                })
+                .collect()
+        };
+
+        if let Some(captures) = regex.captures(&code_canonical) {
+            let birth_year = captures.get(3).unwrap().as_str().parse().unwrap();
+            let birth_month = captures.get(4).unwrap().as_str().chars().next().unwrap();
+            let birth_day_gender = captures.get(5).unwrap().as_str().parse().unwrap();
+            let birth_town = captures.get(6).unwrap().as_str();
+            let check_character_actual = captures.get(7).unwrap().as_str().chars().next().unwrap();
+
+            if check_character_actual != check_character_calculated {
+                return Err(format!(
+                    "Invalid check character: found {}, expected {}",
+                    check_character_actual, check_character_calculated,
+                )
+                .into());
+            }
+
             Ok(FiscalCode {
+                representation: code,
+                representation_canonical: captures.get(0).unwrap().as_str().into(),
                 surname: captures.get(1).unwrap().as_str().into(),
                 name: captures.get(2).unwrap().as_str().into(),
-                birth_year: captures.get(3).unwrap().as_str().parse().unwrap(),
-                birth_month: captures.get(4).unwrap().as_str().chars().next().unwrap(),
-                birth_day_gender: captures.get(5).unwrap().as_str().parse().unwrap(),
-                birth_town: captures.get(6).unwrap().as_str().into(),
-                check_character: captures.get(7).unwrap().as_str().chars().next().unwrap(),
+                born_on: born_on(birth_year, birth_month, birth_day_gender)?,
+                gender: gender(birth_day_gender),
+                place_of_birth: place_of_birth(birth_town)?,
             })
         } else {
             Err("Invalid fiscal code format".into())
@@ -191,54 +201,56 @@ impl FromStr for FiscalCode {
     }
 }
 
-impl FiscalCode {
-    fn born_on(&self) -> NaiveDate {
-        let day = if self.birth_day_gender > 40 {
-            self.birth_day_gender - 40
+fn born_on(
+    birth_year: u8,
+    birth_month: char,
+    birth_day_gender: u8,
+) -> Result<NaiveDate, Box<dyn Error>> {
+    let day = if birth_day_gender > 40 {
+        birth_day_gender - 40
+    } else {
+        birth_day_gender
+    };
+
+    let month = *BIRTH_MONTHS
+        .entries()
+        .find(|(_, &c)| c == birth_month)
+        .ok_or("Invalid birth month")?
+        .0
+        + 1;
+
+    let year = {
+        let current = Utc::now().year() as f32;
+
+        let year = ((current / 100.0).round() * 100.0) as i32 + birth_year as i32;
+
+        if year < current as i32 {
+            year
         } else {
-            self.birth_day_gender
-        };
-
-        let month = *BIRTH_MONTHS
-            .entries()
-            .find(|(_, &c)| c == self.birth_month)
-            .unwrap()
-            .0
-            + 1;
-
-        let year = {
-            let current = Utc::now().year() as f32;
-
-            let year = ((current / 100.0).round() * 100.0) as i32 + self.birth_year as i32;
-
-            if year < current as i32 {
-                year
-            } else {
-                year - 100
-            }
-        };
-
-        NaiveDate::from_ymd_opt(year, month.into(), day.into()).expect("valid date")
-    }
-
-    fn gender(&self) -> String {
-        if self.birth_day_gender > 40 {
-            "female".into()
-        } else {
-            "male".into()
+            year - 100
         }
-    }
+    };
 
-    fn place_of_birth(&self) -> PlaceOfBirth {
-        let location = *BIRTH_TOWNS.get(&self.birth_town).unwrap();
+    Ok(NaiveDate::from_ymd_opt(year, month.into(), day.into()).ok_or("Invalid birth date")?)
+}
 
-        PlaceOfBirth {
-            country_code: location.country_code.into(),
-            country_name: location.country_name.into(),
-            city: location.city.map(|v| v.into()),
-            state: location.state.map(|v| v.into()),
-        }
+fn gender(birth_day_gender: u8) -> Gender {
+    if birth_day_gender > 40 {
+        Gender::Female
+    } else {
+        Gender::Male
     }
+}
+
+fn place_of_birth(birth_town: &str) -> Result<PlaceOfBirth, Box<dyn Error>> {
+    let location = *BIRTH_TOWNS.get(birth_town).ok_or("Invalid birth town")?;
+
+    Ok(PlaceOfBirth {
+        country_code: location.country_code.into(),
+        country_name: location.country_name.into(),
+        city: location.city.map(|v| v.into()),
+        state: location.state.map(|v| v.into()),
+    })
 }
 
 static BIRTH_MONTHS: phf::OrderedMap<u8, char> = phf_ordered_map! {
@@ -394,6 +406,7 @@ mod tests {
         assert!(!validate("FCKTSS05F01Z122F"));
         assert!(!validate("FCKTSS05C32Z122F"));
         assert!(!validate("FCKTSS05C01Z105L"));
+        assert!(!validate("GNTMTT99C72H501Y"));
         //spell-checker: enable
     }
 
@@ -433,7 +446,7 @@ mod tests {
             info.as_ref().unwrap().born_on,
             NaiveDate::from_ymd_opt(1999, 3, 27).unwrap()
         );
-        assert_eq!(info.as_ref().unwrap().gender, "male");
+        assert_eq!(info.as_ref().unwrap().gender, Gender::Male);
         assert_eq!(info.as_ref().unwrap().place_of_birth.country_name, "Italia");
         assert_eq!(info.as_ref().unwrap().place_of_birth.country_code, "IT");
         assert_eq!(
@@ -453,7 +466,7 @@ mod tests {
             info.as_ref().unwrap().born_on,
             NaiveDate::from_ymd_opt(1992, 7, 25).unwrap()
         );
-        assert_eq!(info.as_ref().unwrap().gender, "female");
+        assert_eq!(info.as_ref().unwrap().gender, Gender::Female);
         assert_eq!(
             info.as_ref().unwrap().place_of_birth.country_name,
             "Giappone"
