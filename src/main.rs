@@ -1,6 +1,6 @@
 use std::io::{stdin, stdout, Write};
 
-use tommaso_fiscal_code::{info, validate};
+use tommaso_fiscal_code::{info, validate_or_error};
 
 fn main() {
     loop {
@@ -13,9 +13,9 @@ fn main() {
             std::process::exit(1);
         });
 
-        let result = validate(&input);
+        let result = validate_or_error(&input);
         match result {
-            true => {
+            Ok(_) => {
                 println!("Code is valid");
 
                 let info = info(&input).unwrap();
@@ -24,7 +24,7 @@ fn main() {
                 println!("\tGender: {}", info.gender);
                 println!("\t{}", info.place_of_birth);
             }
-            false => println!("Code is invalid"),
+            Err(e) => println!("Code is invalid: {}", e),
         }
         stdout().flush().unwrap();
     }

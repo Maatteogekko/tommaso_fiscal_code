@@ -8,15 +8,25 @@ include!(concat!(env!("OUT_DIR"), "/codegen.rs"));
 /// Check if the string provided is a valid Italian Fiscal Code.
 /// Temporary codes are supported.
 pub fn validate(code: &str) -> bool {
+    validate_or_error(code).is_ok()
+}
+
+/// Check if the string provided is a valid Italian Fiscal Code.
+/// Temporary codes are supported.
+pub fn validate_or_error(code: &str) -> Result<(), Box<dyn Error>> {
     let code = code.trim().to_uppercase();
     let regex = Regex::new(r"^\d{11}$").expect("valid regex");
     if regex.is_match(&code) {
         // temporary fiscal code
         let (code, check_character) = code.split_at(10);
-        return check_character == calculate_check_character_provisional(code).to_string();
+        return if check_character == calculate_check_character_temporary(code).to_string() {
+            Ok(())
+        } else {
+            Err("Invalid temporary fiscal code".into())
+        };
     }
 
-    FiscalCode::try_from(code.as_str()).is_ok()
+    FiscalCode::try_from(code.as_str()).map(|_| ())
 }
 
 /// This function expects a valid Italian Fiscal Code as input.
@@ -100,7 +110,7 @@ fn calculate_check_character(code: &str) -> char {
         .expect("value replacement found")
 }
 
-fn calculate_check_character_provisional(code: &str) -> char {
+fn calculate_check_character_temporary(code: &str) -> char {
     let digits: Vec<u8> = code
         .chars()
         .map(|c| c.to_digit(10).expect("valid digit") as u8)
